@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reports — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+<div class="app-shell" id="appRoot"></div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+let session, classList = [], students = [], instituteName = 'KINGs Learning Centre';
+let currentReport = 'daily';
+let currentRows = []; // last rendered result set, for export
+let currentColumns = []; // [{key, label}]
+
+const REPORT_TABS = [
+  { key: 'daily', label: 'Daily' },
+  { key: 'monthly', label: 'Monthly' },
+  { key: 'classwise', label: 'Class-wise' },
+  { key: 'studentwise', label: 'Student-wise' },
+  { key: 'percentage', label: 'Attendance %' },
+  { key: 'low', label: 'Low Attendance' },
+  { key: 'consecutive', label: 'Consecutive Absent' }
+];
+
+(async function start() {
+  session = await initShell({ page: 'reports' });
+  if (!session) return;
+  buildShellPage();
+  await Promise.all([loadClasses(), loadStudents(), loadInstituteName()]);
+  switchReport('daily');
+})();
+
+async function loadClasses() { classList = await Api.getClassList().catch(() => []); }
+async function loadStudents() { students = await Api.getStudents({}).catch(() => []); }
+async function loadInstituteName() {
+  const s = await Api.getSettings().catch(() => ({}));
+  instituteName = s.INSTITUTE_NAME || instituteName;
+}
+
+function buildShellPage() {
+  document.getElementById('pageRoot').innerHTML = `
+    <div class="tab-bar mb-16" id="reportTabs">
+      ${REPORT_TABS.map(t => `<button class="tab-btn" data-report="${t.key}">${t.label}</button>`).join('')}
+    </div>
+    <div class="card mb-16">
+      <div class="row wrap gap-12" id="filterBar"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">
+        <span id="resultTitle">Report Results</span>
+        <div class="row gap-8 no-print">
+          <button class="btn btn-outline btn-sm" id="exportPdfBtn"><span class="material-icons">picture_as_pdf</span> PDF</button>
+          <button class="btn btn-outline btn-sm" id="exportXlsBtn"><span class="material-icons">grid_on</span> Excel</button>
+          <button class="btn btn-outline btn-sm" id="printBtn"><span class="material-icons">print</span> Print</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table class="data-table"><thead id="resultHead"></thead><tbody id="resultBody"></tbody></table></div>
+    </div>
+  `;
+  document.querySelectorAll('#reportTabs .tab-btn').forEach(btn => btn.addEventListener('click', () => switchReport(btn.dataset.report)));
+  document.getElementById('exportPdfBtn').addEventListener('click', exportPdf);
+  document.getElementById('exportXlsBtn').addEventListener('click', exportExcel);
+  document.getElementById('printBtn').addEventListener('click', () => window.print());
+}
+
+function switchReport(key) {
+  currentReport = key;
+  document.querySelectorAll('#reportTabs .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.report === key));
+  renderFilterBar();
+  runReport();
+}
+
+function classOptions(selectedVal) {
+  return '<option value="">Select class...</option>' + classList.map(c => `<option value="${escapeHtml(c)}" ${c === selectedVal ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
+}
+function studentOptions() {
+  return '<option value="">Select student...</option>' + students.map(s => `<option value="${s.studentId}">${escapeHtml(s.name)} (${escapeHtml(s.className)})</option>`).join('');
+}
+
+function renderFilterBar() {
+  const bar = document.getElementById('filterBar');
+  if (currentReport === 'daily') {
+    bar.innerHTML = `<div class="field mb-0"><label>Date</label><input class="input" type="date" id="fDate" value="${todayStr()}"></div>
+      <button class="btn btn-primary" id="runBtn" style="align-self:flex-end;">Generate</button>`;
+  } else if (currentReport === 'monthly' || currentReport === 'percentage' || currentReport === 'low') {
+    bar.innerHTML = `<div class="field mb-0"><label>Month</label><input class="input" type="month" id="fMonth" value="${thisMonthStr()}"></div>
+      ${currentReport === 'low' ? `<div class="field mb-0"><label>Threshold %</label><input class="input" type="number" id="fThreshold" value="75" style="width:110px;"></div>` : ''}
+      <button class="btn btn-primary" id="runBtn" style="align-self:flex-end;">Generate</button>`;
+  } else if (currentReport === 'classwise') {
+    bar.innerHTML = `<div class="field mb-0"><label>Month</label><input class="input" type="month" id="fMonth" value="${thisMonthStr()}"></div>
+      <div class="field mb-0"><label>Class</label><select class="input" id="fClass">${classOptions()}</select></div>
+      <button class="btn btn-primary" id="runBtn" style="align-self:flex-end;">Generate</button>`;
+  } else if (currentReport === 'studentwise') {
+    bar.innerHTML = `<div class="field mb-0"><label>Student</label><select class="input" id="fStudent" style="min-width:240px;">${studentOptions()}</select></div>
+      <div class="field mb-0"><label>Month</label><input class="input" type="month" id="fMonth" value="${thisMonthStr()}"></div>
+      <button class="btn btn-primary" id="runBtn" style="align-self:flex-end;">Generate</button>
+      <button class="btn btn-gold no-print" id="waBtn" style="align-self:flex-end;"><span class="material-icons">chat</span> Send WhatsApp</button>`;
+  } else if (currentReport === 'consecutive') {
+    bar.innerHTML = `<div class="muted">Students currently on 3 consecutive absences — updates automatically whenever attendance is saved.</div>
+      <button class="btn btn-primary" id="runBtn" style="align-self:flex-end;">Refresh</button>`;
+  }
+  const runBtn = document.getElementById('runBtn');
+  if (runBtn) runBtn.addEventListener('click', runReport);
+  const waBtn = document.getElementById('waBtn');
+  if (waBtn) waBtn.addEventListener('click', sendStudentWhatsApp);
+}
+
+async function runReport() {
+  try {
+    if (currentReport === 'daily') {
+      const date = document.getElementById('fDate').value;
+      const rows = await withLoading('Generating report...', () => Api.getDailyReport(date));
+      setColumns([['date', 'Date'], ['className', 'Class'], ['studentName', 'Student'], ['status', 'Status']]);
+      setRows(rows.map(r => ({ ...r, date: formatDateNice(r.date), status: r.status })), `Daily Report — ${formatDateNice(date)}`);
+    } else if (currentReport === 'monthly') {
+      const month = document.getElementById('fMonth').value;
+      const rows = await withLoading('Generating report...', () => Api.getMonthlyReport(month));
+      setColumns([['studentName', 'Student'], ['className', 'Class'], ['present', 'Present'], ['absent', 'Absent'], ['na', 'NA'], ['percentage', 'Attendance %']]);
+      setRows(rows, `Monthly Report — ${formatMonthNice(month)}`);
+    } else if (currentReport === 'classwise') {
+      const month = document.getElementById('fMonth').value;
+      const className = document.getElementById('fClass').value;
+      if (!className) { toast('Please select a class.', 'warning'); return; }
+      const rows = await withLoading('Generating report...', () => Api.getClassWiseReport(month, className));
+      setColumns([['studentName', 'Student'], ['present', 'Present'], ['absent', 'Absent'], ['na', 'NA'], ['percentage', 'Attendance %']]);
+      setRows(rows, `Class-wise Report — ${escapeHtml(className)}, ${formatMonthNice(month)}`);
+    } else if (currentReport === 'studentwise') {
+      const studentId = document.getElementById('fStudent').value;
+      const month = document.getElementById('fMonth').value;
+      if (!studentId) { toast('Please select a student.', 'warning'); return; }
+      const r = await withLoading('Generating report...', () => Api.getStudentWiseReport(studentId, month));
+      window.__lastStudentReport = r;
+      setColumns([['date', 'Date'], ['status', 'Status']]);
+      // Parent-facing report: NA days are excluded entirely (they are not a class the student "had", so
+      // they must never appear alongside Present/Absent, per the "no NA in parent reports" rule).
+      const visibleRecords = r.records.filter(x => x.status !== 'NA');
+      setRows(visibleRecords.map(x => ({ date: formatDateNice(x.date), status: x.status })),
+        `${r.studentName} (${r.className}) — ${formatMonthNice(month)} — Present: ${r.present}, Absent: ${r.absent}, Attendance: ${r.percentage}%`);
+    } else if (currentReport === 'percentage') {
+      const month = document.getElementById('fMonth').value;
+      const rows = await withLoading('Generating report...', () => Api.getAttendancePercentageReport(month));
+      setColumns([['studentName', 'Student'], ['className', 'Class'], ['present', 'Present'], ['absent', 'Absent'], ['percentage', 'Attendance %']]);
+      setRows(rows, `Attendance Percentage Report — ${formatMonthNice(month)}`);
+    } else if (currentReport === 'low') {
+      const month = document.getElementById('fMonth').value;
+      const threshold = Number(document.getElementById('fThreshold').value || 75);
+      const result = await withLoading('Generating report...', () => Api.getLowAttendanceReport(month, threshold));
+      setColumns([['studentName', 'Student'], ['className', 'Class'], ['present', 'Present'], ['absent', 'Absent'], ['percentage', 'Attendance %']]);
+      setRows(result.students, `Low Attendance Report (below ${threshold}%) — ${formatMonthNice(month)}`);
+    } else if (currentReport === 'consecutive') {
+      const rows = await withLoading('Loading...', () => Api.getConsecutiveAbsentReport());
+      setColumns([['name', 'Student'], ['className', 'Class'], ['parentName', 'Parent'], ['whatsapp', 'WhatsApp']]);
+      setRows(rows, 'Consecutive Absent Report (3+ classes)');
+    }
+  } catch (e) { /* toast already shown */ }
+}
+
+function setColumns(cols) { currentColumns = cols.map(([key, label]) => ({ key, label })); }
+
+function setRows(rows, title) {
+  currentRows = rows;
+  document.getElementById('resultTitle').textContent = title;
+  document.getElementById('resultHead').innerHTML = '<tr>' + currentColumns.map(c => `<th>${escapeHtml(c.label)}</th>`).join('') + '</tr>';
+  const body = document.getElementById('resultBody');
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="${currentColumns.length}"><div class="table-empty"><span class="material-icons">insert_chart</span><div>No data for this selection.</div></div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => '<tr>' + currentColumns.map(c => {
+    const v = r[c.key];
+    return `<td>${c.key === 'percentage' ? `<b>${v}%</b>` : c.key === 'status' ? statusBadge(v) : escapeHtml(v)}</td>`;
+  }).join('') + '</tr>').join('');
+}
+
+function exportExcel() {
+  if (!currentRows.length) { toast('Nothing to export yet.', 'warning'); return; }
+  const data = currentRows.map(r => {
+    const o = {};
+    currentColumns.forEach(c => { o[c.label] = r[c.key]; });
+    return o;
+  });
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Report');
+  XLSX.writeFile(wb, `${currentReport}-report-${todayStr()}.xlsx`);
+}
+
+function exportPdf() {
+  if (!currentRows.length) { toast('Nothing to export yet.', 'warning'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.setFontSize(14);
+  doc.text(instituteName, 14, 16);
+  doc.setFontSize(10);
+  doc.text(document.getElementById('resultTitle').textContent, 14, 23);
+  doc.autoTable({
+    startY: 28,
+    head: [currentColumns.map(c => c.label)],
+    body: currentRows.map(r => currentColumns.map(c => String(r[c.key] != null ? r[c.key] : ''))),
+    headStyles: { fillColor: [11, 36, 71] },
+    styles: { fontSize: 9 }
+  });
+  doc.save(`${currentReport}-report-${todayStr()}.pdf`);
+}
+
+function sendStudentWhatsApp() {
+  const r = window.__lastStudentReport;
+  if (!r) { toast('Generate the student report first.', 'warning'); return; }
+  const msg = buildMonthlySummaryMessage({
+    instituteName, studentName: r.studentName, className: r.className,
+    month: formatMonthNice(r.month), present: r.present, absent: r.absent, percentage: r.percentage
+  });
+  openWhatsApp(r.whatsapp, msg);
+}
+</script>
+</body>
+</html>

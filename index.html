@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>KINGs Learning Centre — Attendance</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="script.js"></script>
+<script>
+  // Simple entry gate: send the user to the right page.
+  (function () {
+    const token = Session.getToken();
+    location.replace(token ? 'dashboard.html' : 'login.html');
+  })();
+</script>
+</head>
+<body>
+</body>
+</html>

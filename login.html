@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Login — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="login-shell">
+  <div class="login-brand">
+    <div class="login-crest">
+      <div class="crest-icon">K</div>
+      <span>KINGs Learning Centre</span>
+    </div>
+    <div class="login-tagline">
+      <div class="eyebrow">Attendance Management System</div>
+      <h1>Every present, every absence — one accurate record.</h1>
+      <p>Mark attendance in seconds, spot low-attendance and consecutive-absence students automatically, and keep parents informed over WhatsApp — all backed by Google Sheets.</p>
+    </div>
+    <div class="login-foot">© <span id="year"></span> KINGs Learning Centre · Chinnamanur, Tamil Nadu</div>
+  </div>
+
+  <div class="login-panel">
+    <div class="login-card">
+      <h2>Welcome back</h2>
+      <div class="sub">Sign in to continue to your dashboard.</div>
+
+      <div class="login-error" id="loginError"></div>
+
+      <form id="loginForm">
+        <div class="field">
+          <label for="username">Username</label>
+          <div class="input-wrap">
+            <span class="material-icons">person</span>
+            <input class="input" id="username" name="username" autocomplete="username" required>
+          </div>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="input-wrap">
+            <span class="material-icons">lock</span>
+            <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+            <button type="button" class="toggle-visibility" id="toggleVis"><span class="material-icons">visibility</span></button>
+          </div>
+        </div>
+        <div class="row" style="justify-content: space-between; margin-bottom: 22px;">
+          <label class="checkbox-row"><input type="checkbox" id="remember"> Remember me</label>
+          <a href="#" class="text-sm" id="forgotLink">Forgot password?</a>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="loginBtn">
+          <span class="material-icons">login</span> Sign in
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+document.getElementById('year').textContent = new Date().getFullYear();
+
+// Already logged in? Skip straight to dashboard.
+(async function checkExisting() {
+  if (Session.getToken()) {
+    try { await Api.validateSession(); location.href = 'dashboard.html'; } catch (e) { Session.clear(); }
+  }
+})();
+
+if (location.search.includes('expired=1')) {
+  showError('Your session expired. Please log in again.');
+}
+
+document.getElementById('toggleVis').addEventListener('click', () => {
+  const pw = document.getElementById('password');
+  const icon = document.querySelector('#toggleVis .material-icons');
+  const show = pw.type === 'password';
+  pw.type = show ? 'text' : 'password';
+  icon.textContent = show ? 'visibility_off' : 'visibility';
+});
+
+document.getElementById('forgotLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  toast('Contact your Administrator to reset your password.', 'warning');
+});
+
+function showError(msg) {
+  const el = document.getElementById('loginError');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('loginBtn');
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const remember = document.getElementById('remember').checked;
+
+  document.getElementById('loginError').classList.remove('show');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="inline-spinner"></span> Signing in...';
+
+  try {
+    const result = await Api.login(username, password, remember);
+    Session.save(result.token, { fullName: result.fullName, role: result.role, username: result.username }, remember);
+    location.href = 'dashboard.html';
+  } catch (err) {
+    showError(err.message || 'Login failed. Please try again.');
+    btn.disabled = false;
+    btn.innerHTML = '<span class="material-icons">login</span> Sign in';
+  }
+});
+</script>
+</body>
+</html>

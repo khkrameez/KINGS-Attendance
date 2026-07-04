@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="app-shell" id="appRoot"></div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+let session;
+
+(async function start() {
+  session = await initShell({ page: 'dashboard' });
+  if (!session) return;
+  buildPage();
+  await loadDashboard();
+})();
+
+function buildPage() {
+  document.getElementById('pageRoot').innerHTML = `
+    <div class="stat-grid" id="statGrid">
+      ${skeletonStats()}
+    </div>
+
+    <div class="chart-grid">
+      <div class="card chart-card">
+        <div class="card-title">Attendance Trend (last 14 days)</div>
+        <canvas id="trendChart"></canvas>
+      </div>
+      <div class="card chart-card">
+        <div class="card-title">Today — Present vs Absent</div>
+        <canvas id="pieChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card mt-16">
+      <div class="card-title">Class-wise Attendance (today)</div>
+      <canvas id="classChart" height="90"></canvas>
+    </div>
+
+    <div class="quick-actions">
+      <button class="btn btn-primary" onclick="location.href='attendance.html'"><span class="material-icons">fact_check</span> Mark Attendance</button>
+      <button class="btn btn-outline" onclick="location.href='students.html'"><span class="material-icons">groups</span> Students</button>
+      <button class="btn btn-outline" onclick="location.href='reports.html'"><span class="material-icons">bar_chart</span> Reports</button>
+    </div>
+
+    <div class="card mt-16" id="consecutiveCard">
+      <div class="card-title">
+        <span>⚠️ Students absent 3 consecutive classes</span>
+      </div>
+      <div id="consecutiveList"></div>
+    </div>
+
+    <div class="card mt-16">
+      <div class="card-title">Recent Attendance Activity</div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Student</th><th>Class</th><th>Status</th><th>Date</th><th>Marked By</th><th>Time</th></tr></thead>
+          <tbody id="recentBody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function skeletonStats() {
+  const items = [
+    { label: 'Total Students', icon: 'groups', id: 'sTotal' },
+    { label: "Today's Present", icon: 'check_circle', id: 'sPresent', cls: 'present' },
+    { label: "Today's Absent", icon: 'cancel', id: 'sAbsent', cls: 'absent' },
+    { label: "Today's NA", icon: 'remove_circle', id: 'sNA', cls: 'na' },
+    { label: "Today's Attendance %", icon: 'percent', id: 'sTodayPct' },
+  ];
+  return items.map(i => `
+    <div class="stat-card ${i.cls || ''}">
+      <div class="icon"><span class="material-icons">${i.icon}</span></div>
+      <div class="label">${i.label}</div>
+      <div class="value" id="${i.id}">—</div>
+    </div>`).join('');
+}
+
+let trendChart, pieChart, classChart;
+
+async function loadDashboard() {
+  let stats;
+  try {
+    stats = await withLoading('Loading dashboard...', () => Api.getDashboardStats());
+  } catch (e) { return; }
+
+  document.getElementById('sTotal').textContent = stats.totalStudents;
+  document.getElementById('sPresent').textContent = stats.today.present;
+  document.getElementById('sAbsent').textContent = stats.today.absent;
+  document.getElementById('sNA').textContent = stats.today.na;
+  document.getElementById('sTodayPct').textContent = stats.today.percentage + '%';
+
+  renderTrend(stats.trend);
+  renderPie(stats.today);
+  renderClassWise(stats.classWise);
+  renderConsecutive(stats.consecutiveAbsentees);
+  renderRecent(stats.recentActivity);
+}
+
+function renderTrend(trend) {
+  const ctx = document.getElementById('trendChart');
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: trend.map(t => formatDateNice(t.date)),
+      datasets: [{ label: 'Attendance %', data: trend.map(t => t.percentage), borderColor: '#1a56db', backgroundColor: 'rgba(26,86,219,0.1)', fill: true, tension: 0.35, pointRadius: 3 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } } } }
+  });
+  if (trend.length === 0) toast('No attendance history yet to build a trend.', 'warning');
+}
+
+function renderPie(today) {
+  const ctx = document.getElementById('pieChart');
+  if (pieChart) pieChart.destroy();
+  pieChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Present', 'Absent', 'NA'],
+      datasets: [{ data: [today.present, today.absent, today.na], backgroundColor: ['#12b76a', '#e4483b', '#f79009'] }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+  });
+}
+
+function renderClassWise(classWise) {
+  const ctx = document.getElementById('classChart');
+  if (classChart) classChart.destroy();
+  classChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: classWise.map(c => c.className),
+      datasets: [{ label: 'Attendance %', data: classWise.map(c => c.percentage), backgroundColor: '#c9a227', borderRadius: 6 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } } } }
+  });
+}
+
+function renderConsecutive(list) {
+  const el = document.getElementById('consecutiveList');
+  if (!list.length) {
+    el.innerHTML = `<div class="empty-state"><span class="material-icons">celebration</span><h3>No students with 3 consecutive absences</h3></div>`;
+    return;
+  }
+  el.innerHTML = list.map(s => `
+    <div class="attendance-row">
+      <div class="flex-1">
+        <div class="a-name">${escapeHtml(s.name)}</div>
+        <div class="a-sub">${escapeHtml(s.className)} · Parent: ${escapeHtml(s.parentName || '—')}</div>
+      </div>
+      <button class="btn btn-gold btn-sm" data-wa="${s.whatsapp}">
+        <span class="material-icons">chat</span> Send WhatsApp Reminder
+      </button>
+    </div>`).join('');
+
+  el.querySelectorAll('[data-wa]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const settings = await Api.getSettings().catch(() => ({ INSTITUTE_NAME: 'KINGs Learning Centre' }));
+      const msg = buildConsecutiveAbsentMessage({ instituteName: settings.INSTITUTE_NAME || 'KINGs Learning Centre' });
+      openWhatsApp(btn.dataset.wa, msg);
+    });
+  });
+}
+
+function renderRecent(rows) {
+  const body = document.getElementById('recentBody');
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="6"><div class="table-empty"><span class="material-icons">inbox</span><div>No attendance activity yet.</div></div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.studentName)}</td>
+      <td>${escapeHtml(r.className)}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td>${formatDateNice(r.date)}</td>
+      <td>${escapeHtml(r.markedBy)}</td>
+      <td>${new Date(r.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+    </tr>`).join('');
+}
+</script>
+</body>
+</html>

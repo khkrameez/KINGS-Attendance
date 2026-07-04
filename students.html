@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Students — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-shell" id="appRoot"></div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+let session, allStudents = [];
+
+(async function start() {
+  session = await initShell({ page: 'students' });
+  if (!session) return;
+  buildPage();
+  await loadStudents();
+})();
+
+function buildPage() {
+  document.getElementById('pageRoot').innerHTML = `
+    <div class="legend-note mb-16">
+      <span class="material-icons">info</span>
+      <div>Student master data comes from the CRM system. This screen only reads and caches it here — it never edits the CRM. Click <b>Sync Students</b> to pull in any newly-admitted students.</div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search-box">
+        <span class="material-icons">search</span>
+        <input class="input" id="searchBox" placeholder="Search by name, parent, mobile, class or school...">
+      </div>
+      <select class="input filter-select" id="classFilter"><option value="">All Classes</option></select>
+      <select class="input filter-select" id="statusFilter">
+        <option value="">All Status</option><option value="Active">Active</option><option value="Inactive">Inactive</option>
+      </select>
+      <button class="btn btn-gold" id="syncBtn"><span class="material-icons">sync</span> Sync Students</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Student Directory</span>
+        <span class="muted text-sm" id="countLabel"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Parent</th><th>Mobile</th><th>WhatsApp</th><th>Class</th><th>School</th><th>Joined</th><th>Status</th></tr></thead>
+          <tbody id="studentsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('searchBox').addEventListener('input', debounce(renderTable, 200));
+  document.getElementById('classFilter').addEventListener('change', renderTable);
+  document.getElementById('statusFilter').addEventListener('change', renderTable);
+  document.getElementById('syncBtn').addEventListener('click', doSync);
+}
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+async function loadStudents() {
+  try {
+    allStudents = await withLoading('Loading students...', () => Api.getStudents({}));
+  } catch (e) { return; }
+  populateClassFilter();
+  renderTable();
+}
+
+function populateClassFilter() {
+  const classes = Array.from(new Set(allStudents.map(s => s.className).filter(Boolean))).sort();
+  const sel = document.getElementById('classFilter');
+  sel.innerHTML = '<option value="">All Classes</option>' + classes.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+}
+
+function renderTable() {
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+  const classF = document.getElementById('classFilter').value;
+  const statusF = document.getElementById('statusFilter').value;
+
+  let rows = allStudents.filter(s => {
+    if (classF && s.className !== classF) return false;
+    if (statusF && s.status !== statusF) return false;
+    if (q) {
+      const hay = [s.name, s.parentName, s.mobile, s.className, s.school].join(' ').toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+
+  document.getElementById('countLabel').textContent = `${rows.length} of ${allStudents.length} students`;
+  const body = document.getElementById('studentsBody');
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8"><div class="table-empty"><span class="material-icons">groups</span><div>No students match your filters.</div></div></td></tr>`;
+    return;
+  }
+
+  body.innerHTML = rows.map(s => `
+    <tr>
+      <td><b>${escapeHtml(s.name)}</b></td>
+      <td>${escapeHtml(s.parentName || '—')}</td>
+      <td>${escapeHtml(s.mobile || '—')}</td>
+      <td>${escapeHtml(s.whatsapp || '—')}</td>
+      <td>${escapeHtml(s.className || '—')}</td>
+      <td>${escapeHtml(s.school || '—')}</td>
+      <td>${s.joiningDate ? formatDateNice(s.joiningDate) : '—'}</td>
+      <td><span class="badge ${s.status === 'Active' ? 'badge-active' : 'badge-inactive'}">${escapeHtml(s.status || 'Active')}</span></td>
+    </tr>`).join('');
+}
+
+async function doSync() {
+  const btn = document.getElementById('syncBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="inline-spinner"></span> Syncing...';
+  try {
+    const result = await withLoading('Syncing students from CRM...', () => Api.syncStudentsFromCrm());
+    toast(`Sync complete — ${result.added} new student(s) added.`, 'success');
+    await loadStudents();
+  } catch (e) {
+    // error toast already shown by withLoading
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span class="material-icons">sync</span> Sync Students';
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Settings — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-shell" id="appRoot"></div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+let session;
+
+(async function start() {
+  session = await initShell({ page: 'settings' });
+  if (!session) return;
+  if (!requireAdmin(session)) return;
+  buildPage();
+  await Promise.all([loadSettings(), loadUsers()]);
+})();
+
+function buildPage() {
+  document.getElementById('pageRoot').innerHTML = `
+    <div class="card mb-16">
+      <div class="card-title">Institute Settings</div>
+      <form id="settingsForm">
+        <div class="form-grid">
+          <div class="field"><label>Institute Name</label><input class="input" name="INSTITUTE_NAME"></div>
+          <div class="field"><label>Institute Logo (URL)</label><input class="input" name="INSTITUTE_LOGO" placeholder="https://..."></div>
+          <div class="field"><label>Academic Year</label><input class="input" name="ACADEMIC_YEAR" placeholder="e.g. 2026-27"></div>
+          <div class="field"><label>Theme</label>
+            <select class="input" name="THEME"><option value="blue">Blue &amp; White (default)</option></select>
+          </div>
+          <div class="field"><label>CRM Google Sheet ID</label><input class="input" name="CRM_SHEET_ID" placeholder="Spreadsheet ID from the CRM sheet's URL"></div>
+          <div class="field"><label>CRM Sheet Tab Name</label><input class="input" name="CRM_SHEET_TAB" placeholder="e.g. Students"></div>
+          <div class="field"><label>Attendance Google Sheet ID</label><input class="input" name="ATTENDANCE_SHEET_ID" disabled></div>
+          <div class="field"><label>Low Attendance Threshold (%)</label><input class="input" type="number" name="LOW_ATTENDANCE_THRESHOLD"></div>
+        </div>
+        <button class="btn btn-primary mt-8" type="submit"><span class="material-icons">save</span> Save Settings</button>
+      </form>
+    </div>
+
+    <div class="card mb-16">
+      <div class="card-title">Change Password</div>
+      <form id="pwForm" class="form-grid" style="max-width:480px;">
+        <div class="field"><label>Current Password</label><input class="input" type="password" name="currentPassword" required></div>
+        <div class="field"><label>New Password</label><input class="input" type="password" name="newPassword" required minlength="6"></div>
+        <button class="btn btn-outline" type="submit" style="grid-column: span 2; justify-self:start;"><span class="material-icons">lock_reset</span> Update Password</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Users</span>
+        <button class="btn btn-primary btn-sm" id="newUserBtn"><span class="material-icons">person_add</span> Create User</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Full Name</th><th>Username</th><th>Role</th><th>Email</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('settingsForm').addEventListener('submit', saveSettings);
+  document.getElementById('pwForm').addEventListener('submit', savePassword);
+  document.getElementById('newUserBtn').addEventListener('click', openCreateUserModal);
+}
+
+async function loadSettings() {
+  let s;
+  try { s = await withLoading('Loading settings...', () => Api.getSettings()); } catch (e) { return; }
+  const form = document.getElementById('settingsForm');
+  Object.keys(s).forEach(key => {
+    const field = form.elements[key];
+    if (field) field.value = s[key];
+  });
+}
+
+async function saveSettings(e) {
+  e.preventDefault();
+  const form = e.target;
+  const settings = {};
+  ['INSTITUTE_NAME', 'INSTITUTE_LOGO', 'ACADEMIC_YEAR', 'THEME', 'CRM_SHEET_ID', 'CRM_SHEET_TAB', 'LOW_ATTENDANCE_THRESHOLD'].forEach(key => {
+    settings[key] = form.elements[key].value;
+  });
+  try {
+    await withLoading('Saving...', () => Api.updateSettings(settings));
+    toast('Settings saved.', 'success');
+  } catch (e) { /* toast shown */ }
+}
+
+async function savePassword(e) {
+  e.preventDefault();
+  const form = e.target;
+  try {
+    await withLoading('Updating password...', () => Api.changePassword({
+      currentPassword: form.currentPassword.value,
+      newPassword: form.newPassword.value
+    }));
+    toast('Password updated.', 'success');
+    form.reset();
+  } catch (e) { /* toast shown */ }
+}
+
+async function loadUsers() {
+  let users;
+  try { users = await withLoading('Loading users...', () => Api.listUsers()); } catch (e) { return; }
+  renderUsers(users);
+}
+
+function renderUsers(users) {
+  const body = document.getElementById('usersBody');
+  if (!users.length) { body.innerHTML = `<tr><td colspan="6"><div class="table-empty">No users yet.</div></td></tr>`; return; }
+  body.innerHTML = users.map(u => `
+    <tr>
+      <td>${escapeHtml(u.fullName)}</td>
+      <td>${escapeHtml(u.username)}</td>
+      <td><span class="badge ${u.role === 'Administrator' ? 'badge-admin' : 'badge-staff'}">${escapeHtml(u.role)}</span></td>
+      <td>${escapeHtml(u.email || '—')}</td>
+      <td><span class="badge ${String(u.active) !== 'false' ? 'badge-active' : 'badge-inactive'}">${String(u.active) !== 'false' ? 'Active' : 'Inactive'}</span></td>
+      <td>
+        <button class="btn btn-outline btn-sm" data-toggle="${u.userId}" data-active="${String(u.active) !== 'false'}">
+          ${String(u.active) !== 'false' ? 'Deactivate' : 'Activate'}
+        </button>
+      </td>
+    </tr>`).join('');
+
+  body.querySelectorAll('[data-toggle]').forEach(btn => btn.addEventListener('click', () => toggleUser(btn.dataset.toggle, btn.dataset.active === 'true')));
+}
+
+async function toggleUser(userId, currentlyActive) {
+  const yes = await confirmModal({
+    title: currentlyActive ? 'Deactivate user' : 'Activate user',
+    message: currentlyActive ? 'This user will no longer be able to log in.' : 'This user will be able to log in again.',
+    confirmText: currentlyActive ? 'Deactivate' : 'Activate',
+    danger: currentlyActive
+  });
+  if (!yes) return;
+  try {
+    await withLoading('Updating...', () => Api.deactivateUser(userId, !currentlyActive));
+    toast('User updated.', 'success');
+    loadUsers();
+  } catch (e) { /* toast shown */ }
+}
+
+function openCreateUserModal() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal">
+      <div class="modal-head"><h3>Create User</h3><button class="modal-close" id="closeCreate"><span class="material-icons">close</span></button></div>
+      <div class="modal-body">
+        <form id="createUserForm">
+          <div class="field"><label>Full Name</label><input class="input" name="fullName" required></div>
+          <div class="field"><label>Username</label><input class="input" name="username" required></div>
+          <div class="field"><label>Email</label><input class="input" type="email" name="email"></div>
+          <div class="field"><label>Password</label><input class="input" type="password" name="password" required minlength="6"></div>
+          <div class="field"><label>Role</label>
+            <select class="input" name="role"><option value="Staff">Staff</option><option value="Administrator">Administrator</option></select>
+          </div>
+        </form>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-outline" id="cancelCreate">Cancel</button>
+        <button class="btn btn-primary" id="submitCreate"><span class="material-icons">person_add</span> Create</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.querySelector('#closeCreate').addEventListener('click', close);
+  backdrop.querySelector('#cancelCreate').addEventListener('click', close);
+  backdrop.querySelector('#submitCreate').addEventListener('click', async () => {
+    const form = backdrop.querySelector('#createUserForm');
+    if (!form.reportValidity()) return;
+    const payload = {
+      fullName: form.fullName.value, username: form.username.value, email: form.email.value,
+      password: form.password.value, role: form.role.value
+    };
+    try {
+      await withLoading('Creating user...', () => Api.createUser(payload));
+      toast('User created.', 'success');
+      close();
+      loadUsers();
+    } catch (e) { /* toast shown */ }
+  });
+}
+</script>
+</body>
+</html>

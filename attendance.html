@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Attendance — KINGs Learning Centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-shell" id="appRoot"></div>
+
+<script src="script.js"></script>
+<script src="api.js"></script>
+<script>
+let session, classList = [], roster = [], alreadySaved = false;
+
+(async function start() {
+  session = await initShell({ page: 'attendance' });
+  if (!session) return;
+  buildPage();
+  await loadClasses();
+  switchTab('mark');
+})();
+
+function buildPage() {
+  document.getElementById('pageRoot').innerHTML = `
+    <div class="tab-bar mb-16">
+      <button class="tab-btn active" data-tab="mark">Mark Attendance</button>
+      <button class="tab-btn" data-tab="history">Attendance History</button>
+    </div>
+
+    <div id="markTab">
+      <div class="card mb-16">
+        <div class="form-grid">
+          <div class="field">
+            <label>Date</label>
+            <input class="input" type="date" id="markDate">
+          </div>
+          <div class="field">
+            <label>Class</label>
+            <select class="input" id="markClass"><option value="">Select a class...</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="rosterCard">
+        <div class="toolbar">
+          <div class="search-box"><span class="material-icons">search</span><input class="input" id="rosterSearch" placeholder="Search student..."></div>
+          <button class="btn btn-outline btn-sm" id="allPresentBtn">All Present</button>
+          <button class="btn btn-outline btn-sm" id="allAbsentBtn">All Absent</button>
+          <button class="btn btn-outline btn-sm" id="allNaBtn">All NA</button>
+          <button class="btn btn-outline btn-sm" id="resetBtn">Reset</button>
+        </div>
+        <div id="savedNotice" class="legend-note mb-16 hidden">
+          <span class="material-icons">history</span>
+          <div>Attendance for this date and class was already saved. Saving again will update the existing records.</div>
+        </div>
+        <div class="attendance-list" id="rosterList"></div>
+        <div class="row mt-16" style="justify-content: flex-end;">
+          <button class="btn btn-primary" id="saveAttendanceBtn"><span class="material-icons">save</span> Save Attendance</button>
+        </div>
+      </div>
+
+      <div class="empty-state" id="rosterEmpty">
+        <span class="material-icons">how_to_reg</span>
+        <h3>Choose a date and class</h3>
+        <p>The student list will appear here once both are selected.</p>
+      </div>
+    </div>
+
+    <div id="historyTab" class="hidden">
+      <div class="toolbar">
+        <input class="input filter-select" type="date" id="hDate">
+        <input class="input filter-select" type="month" id="hMonth">
+        <select class="input filter-select" id="hClass"><option value="">All Classes</option></select>
+        <button class="btn btn-outline" id="hClearBtn">Clear Filters</button>
+      </div>
+      <div class="card">
+        <div class="card-title">Attendance History</div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Date</th><th>Class</th><th>Student</th><th>Status</th><th>Marked By</th><th>Actions</th></tr></thead>
+            <tbody id="historyBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+  document.getElementById('markDate').value = todayStr();
+  document.getElementById('markDate').addEventListener('change', maybeLoadRoster);
+  document.getElementById('markClass').addEventListener('change', maybeLoadRoster);
+  document.getElementById('rosterSearch').addEventListener('input', filterRoster);
+  document.getElementById('allPresentBtn').addEventListener('click', () => bulkSet('Present'));
+  document.getElementById('allAbsentBtn').addEventListener('click', () => bulkSet('Absent'));
+  document.getElementById('allNaBtn').addEventListener('click', () => bulkSet('NA'));
+  document.getElementById('resetBtn').addEventListener('click', () => maybeLoadRoster());
+  document.getElementById('saveAttendanceBtn').addEventListener('click', saveAttendance);
+
+  document.getElementById('hDate').addEventListener('change', loadHistory);
+  document.getElementById('hMonth').addEventListener('change', loadHistory);
+  document.getElementById('hClass').addEventListener('change', loadHistory);
+  document.getElementById('hClearBtn').addEventListener('click', () => {
+    document.getElementById('hDate').value = ''; document.getElementById('hMonth').value = ''; document.getElementById('hClass').value = '';
+    loadHistory();
+  });
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('markTab').classList.toggle('hidden', tab !== 'mark');
+  document.getElementById('historyTab').classList.toggle('hidden', tab !== 'history');
+  if (tab === 'history') loadHistory();
+}
+
+async function loadClasses() {
+  try {
+    classList = await Api.getClassList();
+  } catch (e) { classList = []; }
+  const opts = classList.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  document.getElementById('markClass').innerHTML = '<option value="">Select a class...</option>' + opts;
+  document.getElementById('hClass').innerHTML = '<option value="">All Classes</option>' + opts;
+}
+
+async function maybeLoadRoster() {
+  const date = document.getElementById('markDate').value;
+  const className = document.getElementById('markClass').value;
+  if (!date || !className) { document.getElementById('rosterCard').classList.add('hidden'); document.getElementById('rosterEmpty').classList.remove('hidden'); return; }
+
+  let result;
+  try {
+    result = await withLoading('Loading class roster...', () => Api.getStudentsForAttendance(date, className));
+  } catch (e) { return; }
+
+  roster = result.roster.map(r => ({ ...r, current: r.status }));
+  alreadySaved = result.alreadySaved;
+
+  document.getElementById('rosterEmpty').classList.add('hidden');
+  document.getElementById('rosterCard').classList.remove('hidden');
+  document.getElementById('savedNotice').classList.toggle('hidden', !alreadySaved);
+  document.getElementById('rosterSearch').value = '';
+  renderRoster();
+}
+
+function renderRoster() {
+  const list = document.getElementById('rosterList');
+  if (!roster.length) {
+    list.innerHTML = `<div class="table-empty"><span class="material-icons">groups</span><div>No students found in this class. Sync students first if this class was just added.</div></div>`;
+    return;
+  }
+  list.innerHTML = roster.map((s, i) => `
+    <div class="attendance-row" data-idx="${i}" data-name="${escapeHtml(s.name).toLowerCase()}">
+      <div class="flex-1"><div class="a-name">${escapeHtml(s.name)}</div><div class="a-sub">${escapeHtml(s.className)}</div></div>
+      <div class="status-toggle">
+        <button class="status-btn present ${s.current === 'Present' ? 'active' : ''}" data-status="Present">Present</button>
+        <button class="status-btn absent ${s.current === 'Absent' ? 'active' : ''}" data-status="Absent">Absent</button>
+        <button class="status-btn na ${s.current === 'NA' ? 'active' : ''}" data-status="NA">NA</button>
+      </div>
+    </div>`).join('');
+
+  list.querySelectorAll('.status-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.attendance-row');
+      const idx = Number(row.dataset.idx);
+      roster[idx].current = btn.dataset.status;
+      row.querySelectorAll('.status-btn').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+}
+
+function filterRoster() {
+  const q = document.getElementById('rosterSearch').value.trim().toLowerCase();
+  document.querySelectorAll('#rosterList .attendance-row').forEach(row => {
+    row.classList.toggle('hidden', q && row.dataset.name.indexOf(q) === -1);
+  });
+}
+
+function bulkSet(status) {
+  roster.forEach(s => s.current = status);
+  renderRoster();
+  filterRoster();
+}
+
+async function saveAttendance() {
+  const missing = roster.filter(s => !s.current);
+  if (missing.length) { toast(`Please set a status for all students (${missing.length} pending).`, 'warning'); return; }
+
+  const date = document.getElementById('markDate').value;
+  const className = document.getElementById('markClass').value;
+  const records = roster.map(s => ({ studentId: s.studentId, name: s.name, status: s.current }));
+
+  try {
+    const result = await withLoading('Saving attendance...', () => Api.saveAttendance(date, className, records));
+    toast(`Attendance saved (${result.created} new, ${result.updated} updated).`, 'success');
+    if (result.consecutiveAbsentCount > 0) {
+      toast(`${result.consecutiveAbsentCount} student(s) now have 3 consecutive absences — check the Dashboard.`, 'warning');
+    }
+    alreadySaved = true;
+    document.getElementById('savedNotice').classList.remove('hidden');
+  } catch (e) { /* toast already shown */ }
+}
+
+// ---- History ----------------------------------------------------------
+async function loadHistory() {
+  const filters = {
+    date: document.getElementById('hDate').value || undefined,
+    month: document.getElementById('hMonth').value || undefined,
+    className: document.getElementById('hClass').value || undefined
+  };
+  let rows;
+  try {
+    rows = await withLoading('Loading history...', () => Api.getAttendanceHistory(filters));
+  } catch (e) { return; }
+
+  const body = document.getElementById('historyBody');
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="6"><div class="table-empty"><span class="material-icons">history</span><div>No attendance records match your filters.</div></div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${formatDateNice(r.date)}</td>
+      <td>${escapeHtml(r.className)}</td>
+      <td>${escapeHtml(r.studentName)}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td>${escapeHtml(r.markedBy)}</td>
+      <td class="row gap-8">
+        <button class="btn btn-outline btn-sm" data-edit="${r.recordId}" data-status="${r.status}"><span class="material-icons">edit</span></button>
+        ${session.role === 'Administrator' ? `<button class="btn btn-danger btn-sm" data-del="${r.recordId}"><span class="material-icons">delete</span></button>` : ''}
+      </td>
+    </tr>`).join('');
+
+  body.querySelectorAll('[data-edit]').forEach(btn => btn.addEventListener('click', () => editRecord(btn.dataset.edit, btn.dataset.status)));
+  body.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', () => deleteRecord(btn.dataset.del)));
+}
+
+async function editRecord(recordId, currentStatus) {
+  const order = ['Present', 'Absent', 'NA'];
+  const next = order[(order.indexOf(currentStatus) + 1) % order.length];
+  const yes = await confirmModal({ title: 'Edit attendance', message: `Change status to "${next}"?`, confirmText: 'Update' });
+  if (!yes) return;
+  try {
+    await withLoading('Updating...', () => Api.updateAttendanceRecord(recordId, next));
+    toast('Attendance record updated.', 'success');
+    loadHistory();
+  } catch (e) { /* toast shown */ }
+}
+
+async function deleteRecord(recordId) {
+  const yes = await confirmModal({ title: 'Delete attendance record', message: 'This cannot be undone. Continue?', confirmText: 'Delete', danger: true });
+  if (!yes) return;
+  try {
+    await withLoading('Deleting...', () => Api.deleteAttendanceRecord(recordId));
+    toast('Attendance record deleted.', 'success');
+    loadHistory();
+  } catch (e) { /* toast shown */ }
+}
+</script>
+</body>
+</html>
